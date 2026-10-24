@@ -134,19 +134,25 @@ class DemoClientTests(unittest.TestCase):
         self.assertEqual(send_local_request.check_report(req, good), [])
 
 
+THROWAWAY_SEEDS = {
+    "ORCHESTRATOR_SEED": "1" * 64,
+    "RESEARCH_AGENT_SEED": "2" * 64,
+    "ANALYSIS_AGENT_SEED": "3" * 64,
+}
+
+
 class SecretHygieneTests(unittest.TestCase):
     def test_seeds_never_appear_in_reports_or_logs(self):
-        seeds = [os.environ.get(n, "") for n in
-                 ("ORCHESTRATOR_SEED", "RESEARCH_AGENT_SEED", "ANALYSIS_AGENT_SEED")]
-        seeds = [s for s in seeds if s]
-        self.assertTrue(seeds, "test harness should provide throwaway seeds")
+        # Throwaway seeds set here, so the leak check runs on any checkout
+        # instead of depending on the developer's own .env being present.
+        seeds = list(THROWAWAY_SEEDS.values())
         records = []
         handler = logging.Handler()
         handler.emit = lambda record: records.append(record.getMessage())
         logging.getLogger().addHandler(handler)
         try:
             ctx = Ctx([RuntimeError("peer down"), (analysis(), None)])
-            with patch.dict(os.environ, PEERS):
+            with patch.dict(os.environ, {**PEERS, **THROWAWAY_SEEDS}):
                 report = asyncio.run(analyze_proposal(
                     ctx, DAOAnalysisRequest(proposal_id=PROPOSAL_ID, proposal_url=PROPOSAL_URL)))
         finally:
