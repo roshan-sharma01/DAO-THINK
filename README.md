@@ -1,6 +1,6 @@
-# DAO-Think
+# DAO-THINK
 
-DAO-Think is a human-in-the-loop decision-support system for DAO governance
+DAO-THINK is a human-in-the-loop decision-support system for DAO governance
 proposals. Three uAgents cooperate:
 
 ```
