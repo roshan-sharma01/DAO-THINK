@@ -23,7 +23,9 @@ fail() { echo "E2E: $*" >&2; exit 1; }
 "$PY" - <<'EOF' || exit 1
 import os, sys
 from dotenv import load_dotenv
-load_dotenv()
+# Explicit path: this snippet is fed on stdin, so there is no script frame for
+# find_dotenv() to walk and it would assert. The repo root is the cwd here.
+load_dotenv(".env")
 keys = ["ORCHESTRATOR_SEED", "RESEARCH_AGENT_SEED", "ANALYSIS_AGENT_SEED", "TEST_CLIENT_SEED"]
 values = [os.getenv(k, "").strip() for k in keys]
 missing = [k for k, v in zip(keys, values) if not v]
