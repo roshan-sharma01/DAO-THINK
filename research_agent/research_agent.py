@@ -1,18 +1,11 @@
 import asyncio
-import re
 
 from dotenv import load_dotenv
-from uagents import Agent, Context, Protocol
-from uagents_core.contrib.protocols.chat import (
-    ChatMessage,
-    ChatAcknowledgement,
-    TextContent,
-    chat_protocol_spec,
-)
+from uagents import Agent, Context
 
 from local_config import RESEARCH_PORT, local_mode_enabled, local_resolver, seed_from_env
 from shared.models import ResearchRequest, ResearchResult
-from research_agent.research_tools import MAX_SOURCES, research_proposal, research_sources
+from research_agent.research_tools import MAX_SOURCES, research_proposal
 
 load_dotenv()
 
@@ -72,13 +65,6 @@ async def build_research_result(msg: ResearchRequest) -> ResearchResult:
         caveats=list(dict.fromkeys(caveats)),
     )
 
-# Agent Chat Protocol (ACP).
-chat_protocol = Protocol(
-    name=chat_protocol_spec.name,
-    version=chat_protocol_spec.version,
-    spec=chat_protocol_spec,
-)
-
 
 def build_research_agent(
     port: int = DEFAULT_PORT,
@@ -102,9 +88,9 @@ def build_research_agent(
 
     agent = Agent(**agent_kwargs)
 
-    # --------------------------------------------------
-    # 1. Existing structured research handler
-    # --------------------------------------------------
+    # Structured research handler: the only way the Orchestrator talks to this
+    # agent. The agent deliberately publishes no chat protocol, so it cannot be
+    # addressed from ASI:One as a second, non-pipeline entry point.
     @agent.on_message(model=ResearchRequest)
     async def handle_research(
         ctx: Context,
@@ -117,102 +103,11 @@ def build_research_agent(
         response = await build_research_result(msg)
         await ctx.send(sender, response)
 
-    # --------------------------------------------------
-    # 2. ACP acknowledgement handler
-    # --------------------------------------------------
-    @chat_protocol.on_message(model=ChatAcknowledgement)
-    async def handle_acknowledgement(
-        ctx: Context,
-        sender: str,
-        msg: ChatAcknowledgement,
-    ):
-        ctx.logger.info(
-            f"ACP acknowledgement received from {sender}: "
-            f"{msg.acknowledged_msg_id}"
-        )
-
-    # --------------------------------------------------
-    # 3. ACP chat handler
-    # --------------------------------------------------
-    @chat_protocol.on_message(model=ChatMessage)
-    async def handle_chat(
-        ctx: Context,
-        sender: str,
-        msg: ChatMessage,
-    ):
-        # Acknowledge the incoming message.
-        if msg.msg_id is not None:
-            await ctx.send(
-                sender,
-                ChatAcknowledgement(
-                    acknowledged_msg_id=msg.msg_id
-                ),
-            )
-
-        # Extract ordinary text from ACP content.
-        text = " ".join(
-            item.text
-            for item in msg.content
-            if isinstance(item, TextContent)
-        ).strip()
-
-        if not text:
-            reply = (
-                "Please send a research request as text and include "
-                "HTTPS source URLs to investigate."
-            )
-            await ctx.send(
-                sender,
-                ChatMessage(content=[TextContent(text=reply)]),
-            )
-            return
-
-        # Extract URLs from the message.
-        urls = re.findall(r"https?://\S+", text)
-        urls = [
-            url.rstrip(".,);]")
-            for url in urls
-        ][:MAX_SOURCES]
-
-        # Run the existing safety-checked research pipeline.
-        result = await asyncio.to_thread(research_sources, urls)
-        findings = result["research_findings"]
-        gaps = result["evidence_gaps"]
-
-        if findings:
-            reply = "Research findings:\n" + "\n".join(
-                f"- {finding}" for finding in findings
-            )
-        else:
-            reply = (
-                "I couldn't retrieve usable evidence from the supplied "
-                "URLs. Please include relevant HTTPS source URLs."
-            )
-
-        if gaps:
-            reply += "\n\nEvidence gaps:\n" + "\n".join(
-                f"- {gap}" for gap in gaps
-            )
-
-        await ctx.send(
-            sender,
-            ChatMessage(content=[TextContent(text=reply)]),
-        )
-
-    # Register ACP and publish its manifest.
-    agent.include(
-        chat_protocol,
-        publish_manifest=True,
-    )
-
-    # --------------------------------------------------
-    # 4. Startup logging
-    # --------------------------------------------------
     @agent.on_event("startup")
     async def startup(ctx: Context):
         ctx.logger.info("DAOThink Research Agent is running.")
         ctx.logger.info(f"Agent address: {agent.address}")
-        ctx.logger.info("ACP chat protocol enabled.")
+        ctx.logger.info("Structured research protocol enabled (no chat protocol).")
         ctx.logger.info("Mailbox enabled: %s", not local_mode_enabled())
 
     return agent

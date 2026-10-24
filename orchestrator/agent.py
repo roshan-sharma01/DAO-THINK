@@ -11,6 +11,8 @@ from uagents import Agent, Context, Protocol
 from uagents_core.contrib.protocols.chat import (
     ChatAcknowledgement,
     ChatMessage,
+    EndSessionContent,
+    StartSessionContent,
     TextContent,
     chat_protocol_spec,
 )
@@ -311,6 +313,18 @@ def parse_chat_request(text: str) -> DAOAnalysisRequest:
     return DAOAnalysisRequest(proposal_id=proposal_id, proposal_url=url)
 
 
+def _reply(text: str, end_session: bool = False) -> ChatMessage:
+    """Build a chat reply, optionally closing the session.
+
+    Agentverse/ASI:One treat EndSessionContent as "this turn is finished and no
+    history is being kept", so only send it once a real answer has been produced.
+    """
+    content: list = [TextContent(text=text)]
+    if end_session:
+        content.append(EndSessionContent())
+    return ChatMessage(content=content)
+
+
 @agent.on_message(model=DAOAnalysisRequest, replies={DecisionReport})
 async def handle_analysis_request(
     ctx: Context, sender: str, request: DAOAnalysisRequest
@@ -323,19 +337,50 @@ async def handle_analysis_request(
 async def handle_chat_message(
     ctx: Context, sender: str, message: ChatMessage
 ) -> None:
+    # Acknowledge first: the client gets a receipt before the pipeline runs.
     await ctx.send(
         sender, ChatAcknowledgement(acknowledged_msg_id=message.msg_id)
     )
+
     text = message.text().strip()
+    if not text:
+        # Session opened without a question (or a non-text message). Reply with
+        # guidance and keep the session open: reporting "no URL found" here was
+        # a false error, because the user had not asked anything yet.
+        started = any(
+            isinstance(item, StartSessionContent) for item in message.content
+        )
+        greeting = "DAOThink: DAO governance evidence review. " + CHAT_HELP
+        if not started:
+            greeting = CHAT_HELP
+        await ctx.send(sender, _reply(greeting))
+        return
+
     try:
         request = parse_chat_request(text)
     except (TypeError, ValueError) as exc:
-        response_text = f"{CHAT_HELP}\n\nInput error: {exc}"
-    else:
-        report = await analyze_proposal(ctx, request)
-        response_text = format_report(report)
+        await ctx.send(
+            sender, _reply(f"{CHAT_HELP}\n\nInput error: {exc}", end_session=True)
+        )
+        return
 
-    await ctx.send(sender, ChatMessage(content=[TextContent(text=response_text)]))
+    try:
+        report = await analyze_proposal(ctx, request)
+    except Exception:
+        # Never let an unexpected failure drop the conversation silently.
+        ctx.logger.exception("DAOThink pipeline failed while handling a chat request.")
+        await ctx.send(
+            sender,
+            _reply(
+                "DAOThink could not complete this analysis because of an internal "
+                "error, so no report was produced. Nothing was voted on. Please "
+                "retry with the same proposal URL.",
+                end_session=True,
+            ),
+        )
+        return
+
+    await ctx.send(sender, _reply(format_report(report), end_session=True))
 
 
 @chat_protocol.on_message(model=ChatAcknowledgement)
