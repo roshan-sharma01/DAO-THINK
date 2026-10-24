@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+private_keys.json
+*.key
+*.pem
+*.mnemonic
+*.seed
+logs/
+.pytest_cache/
