@@ -18,8 +18,10 @@ from analyst.agent import build_analysis_result
 from orchestrator.agent import analyze_proposal, parse_chat_request
 from orchestrator.report import format_report
 from research_agent import research_tools as rt
-from research_agent.research_agent import build_research_result
-from shared.models import AnalysisRequest, DAOAnalysisRequest, ResearchRequest
+from research_agent.research_agent import _log_retrieval, build_research_result
+from shared.models import (
+    AnalysisRequest, DAOAnalysisRequest, ResearchRequest, ResearchResult,
+)
 from tests.fixtures import (
     BODY, PROPOSAL_ID, PROPOSAL_URL, TITLE, graphql_body, snapshot_proposal,
 )
@@ -152,6 +154,47 @@ class PipelineTests(unittest.TestCase):
 
         report, _ = self.run_pipeline(request)
         self.assertEqual(report.proposal_title, TITLE)
+
+
+class RetrievalLoggingTests(unittest.TestCase):
+    """The research step logs retrieval outcome without proposal text."""
+
+    def test_successful_retrieval_is_logged_without_proposal_text(self):
+        result = ResearchResult(
+            proposal_id=PROPOSAL_ID,
+            summary="s",
+            findings=["f"],
+            source_urls=[PROPOSAL_URL],
+            limitations=[],
+            retrieval_method="snapshot_graphql",
+            proposal_text=BODY,
+            proposal_content_retrieved=True,
+        )
+        context = Mock()
+
+        _log_retrieval(context, result)
+
+        call = context.logger.info.call_args
+        self.assertIn("Proposal retrieval succeeded", call.args[0])
+        self.assertEqual(call.args[1], PROPOSAL_ID)
+        self.assertEqual(call.args[2], "snapshot_graphql")
+        self.assertNotIn(BODY, call.args[0] % call.args[1:])
+
+    def test_failed_retrieval_is_logged_as_an_evidence_gap(self):
+        result = ResearchResult(
+            proposal_id=PROPOSAL_ID,
+            summary="s",
+            findings=[],
+            source_urls=[],
+            limitations=["Proposal could not be retrieved."],
+        )
+        context = Mock()
+
+        _log_retrieval(context, result)
+
+        call = context.logger.info.call_args
+        self.assertIn("Proposal retrieval failed", call.args[0])
+        self.assertEqual(call.args[1], PROPOSAL_ID)
 
 
 if __name__ == "__main__":

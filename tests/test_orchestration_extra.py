@@ -1,11 +1,16 @@
 import asyncio
+import inspect
 import logging
 import os
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
-from uagents_core.contrib.protocols.chat import ChatMessage, TextContent
+import analyst.agent as analyst_agent_module
+import orchestrator.agent as orchestrator_agent_module
+import research_agent.research_agent as research_agent_module
+from uagents import Model
+from uagents_core.contrib.protocols.chat import ChatMessage, TextContent, chat_protocol_spec
 
 from orchestrator.agent import (
     analyze_proposal, consistency_gaps, handle_chat_message, parse_chat_request,
@@ -164,5 +169,50 @@ class SecretHygieneTests(unittest.TestCase):
             self.assertNotIn(seed, logged)
 
 
+CHAT_PROTOCOL_IMPORT = "uagents_core.contrib.protocols.chat"
+
+
+class AgentSurfaceTests(unittest.TestCase):
+    """Only the Orchestrator exposes the public AgentChatProtocol.
+
+    Declaration-level checks: they inspect what each agent module declares and
+    imports, so they start no agent and touch no network.
+    """
+
+    def test_orchestrator_declares_the_public_chat_protocol(self):
+        protocol = orchestrator_agent_module.chat_protocol
+        self.assertEqual(protocol.spec.name, "AgentChatProtocol")
+        self.assertEqual(protocol.spec.digest, chat_protocol_spec.digest)
+
+    def test_orchestrator_registers_a_chat_message_handler(self):
+        self.assertIn(
+            Model.build_schema_digest(ChatMessage),
+            orchestrator_agent_module.chat_protocol.models,
+        )
+
+    def test_workers_declare_no_chat_protocol_surface(self):
+        for module in (research_agent_module, analyst_agent_module):
+            with self.subTest(module=module.__name__):
+                self.assertFalse(hasattr(module, "chat_protocol"))
+                self.assertFalse(hasattr(module, "chat_protocol_spec"))
+
+    def test_workers_keep_their_structured_request_models(self):
+        self.assertTrue(hasattr(research_agent_module, "ResearchRequest"))
+        self.assertTrue(hasattr(analyst_agent_module, "AnalysisRequest"))
+
+    def test_only_the_orchestrator_imports_the_chat_protocol(self):
+        sources = {
+            module.__name__: inspect.getsource(module)
+            for module in (
+                orchestrator_agent_module, research_agent_module, analyst_agent_module,
+            )
+        }
+        # The guard must be capable of failing: the Orchestrator does import it.
+        self.assertIn(CHAT_PROTOCOL_IMPORT, sources[orchestrator_agent_module.__name__])
+        self.assertNotIn(CHAT_PROTOCOL_IMPORT, sources[research_agent_module.__name__])
+        self.assertNotIn(CHAT_PROTOCOL_IMPORT, sources[analyst_agent_module.__name__])
+
+
 if __name__ == "__main__":
     unittest.main()
+

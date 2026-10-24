@@ -66,6 +66,30 @@ async def build_research_result(msg: ResearchRequest) -> ResearchResult:
     )
 
 
+def _log_retrieval(ctx: Context, result: ResearchResult) -> None:
+    """Log the retrieval outcome. Never log proposal text or other payloads."""
+    method = result.retrieval_method or "unknown"
+    if result.proposal_content_retrieved:
+        ctx.logger.info(
+            "Proposal retrieval succeeded for %s via %s (%d characters of text).",
+            result.proposal_id,
+            method,
+            len(result.proposal_text),
+        )
+    elif result.retrieval_method:
+        ctx.logger.info(
+            "Proposal retrieval returned no content for %s via %s; "
+            "recorded as an evidence gap.",
+            result.proposal_id,
+            method,
+        )
+    else:
+        ctx.logger.info(
+            "Proposal retrieval failed for %s; recorded as an evidence gap.",
+            result.proposal_id,
+        )
+
+
 def build_research_agent(
     port: int = DEFAULT_PORT,
     seed: str | None = None,
@@ -101,6 +125,7 @@ def build_research_agent(
             f"Research requested for proposal: {msg.proposal_id}"
         )
         response = await build_research_result(msg)
+        _log_retrieval(ctx, response)
         await ctx.send(sender, response)
 
     @agent.on_event("startup")

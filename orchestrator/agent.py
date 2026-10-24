@@ -77,6 +77,14 @@ def _log_peer_issue(ctx: Context, message: str) -> None:
         logger.warning(message)
 
 
+def _log_success(ctx: Context, message: str) -> None:
+    """Audit a successful pipeline step. Never pass proposal text or secrets."""
+    if ctx.logger:
+        ctx.logger.info(message)
+    else:
+        logger.info(message)
+
+
 def _no_research(proposal_id: str, reason: str) -> ResearchResult:
     return ResearchResult(
         proposal_id=proposal_id,
@@ -153,6 +161,12 @@ async def _request_research(
             source_urls=[],
             limitations=["Research agent returned a mismatched proposal ID."],
         )
+    _log_success(
+        ctx,
+        f"Research agent returned a valid result for {response.proposal_id} "
+        f"({len(response.findings)} finding(s); content retrieved: "
+        f"{response.proposal_content_retrieved}).",
+    )
     return response
 
 
@@ -212,6 +226,11 @@ async def _request_analysis(
             request.proposal_id,
             ["Analysis agent returned a mismatched proposal ID."],
         )
+    _log_success(
+        ctx,
+        f"Analysis agent returned a valid result for {response.proposal_id} "
+        f"(review status: {response.review_status}).",
+    )
     return response
 
 
@@ -343,6 +362,9 @@ async def handle_chat_message(
     )
 
     text = message.text().strip()
+    # Receipt audit for the only public entry point. Metadata only: the message
+    # text, credentials and seeds are never logged.
+    ctx.logger.info("Received chat message (text supplied: %s).", bool(text))
     if not text:
         # Session opened without a question (or a non-text message). Reply with
         # guidance and keep the session open: reporting "no URL found" here was
@@ -364,6 +386,10 @@ async def handle_chat_message(
         )
         return
 
+    # The proposal ID is the only request metadata logged; the raw message text
+    # is never written to the log.
+    ctx.logger.info("Chat request parsed for proposal %s.", request.proposal_id)
+
     try:
         report = await analyze_proposal(ctx, request)
     except Exception:
@@ -381,6 +407,11 @@ async def handle_chat_message(
         return
 
     await ctx.send(sender, _reply(format_report(report), end_session=True))
+    _log_success(
+        ctx,
+        f"Final report handed to the chat layer for {report.proposal_id}; "
+        "local send completed, delivery to the user is not confirmed here.",
+    )
 
 
 @chat_protocol.on_message(model=ChatAcknowledgement)

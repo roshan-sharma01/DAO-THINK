@@ -269,6 +269,73 @@ class OrchestrationTests(unittest.TestCase):
         response = context.send.await_args_list[-1].args[1]
         self.assertIn("Input error:", response.text())
 
+    def test_valid_peer_responses_are_logged(self) -> None:
+        context = MockPeerContext(
+            [
+                (research_result(), None),
+                (analysis_result(), None),
+            ]
+        )
+
+        self.run_analysis(context)
+
+        logged = " ".join(
+            str(call.args[0]) for call in context.logger.info.call_args_list
+        )
+        self.assertIn("Research agent returned a valid result for proposal-1", logged)
+        self.assertIn("Analysis agent returned a valid result for proposal-1", logged)
+
+    def test_final_reply_log_does_not_claim_delivery(self) -> None:
+        context = MockPeerContext()
+        report = build_decision_report(
+            "Example proposal", research_result(), analysis_result()
+        )
+        message = Mock(spec=ChatMessage)
+        message.msg_id = uuid4()
+        message.text.return_value = (
+            '{"proposal_id": "proposal-1", "proposal_title": "Example proposal", '
+            '"proposal_url": "https://example.com/proposal"}'
+        )
+
+        with patch("orchestrator.agent.analyze_proposal", AsyncMock(return_value=report)):
+            asyncio.run(handle_chat_message(context, "chat-user", message))
+
+        logged = " ".join(
+            str(call.args[0]) for call in context.logger.info.call_args_list
+        )
+        self.assertIn("Final report handed to the chat layer for proposal-1", logged)
+        self.assertIn("not confirmed", logged)
+
+    def test_chat_receipt_is_logged_without_the_message_text(self) -> None:
+        context = MockPeerContext()
+        report = build_decision_report(
+            "Example proposal", research_result(), analysis_result()
+        )
+        message = Mock(spec=ChatMessage)
+        message.msg_id = uuid4()
+        message_text = (
+            '{"proposal_id": "proposal-1", "proposal_title": "Example proposal", '
+            '"proposal_url": "https://example.com/proposal"}'
+        )
+        message.text.return_value = message_text
+
+        with patch("orchestrator.agent.analyze_proposal", AsyncMock(return_value=report)):
+            asyncio.run(handle_chat_message(context, "chat-user", message))
+
+        calls = context.logger.info.call_args_list
+        receipts = [
+            call for call in calls if "Received chat message" in str(call.args[0])
+        ]
+        self.assertEqual(len(receipts), 1)
+        parsed = [
+            call for call in calls if "Chat request parsed for proposal" in str(call.args[0])
+        ]
+        self.assertEqual(len(parsed), 1)
+        # The validated proposal ID is the metadata that gets logged.
+        self.assertEqual(parsed[0].args[1], "proposal-1")
+        # No log record may contain the raw message text.
+        self.assertNotIn(message_text, " ".join(str(call) for call in calls))
+
     def test_chat_json_input_still_dispatches_a_proposal(self) -> None:
         context = MockPeerContext()
         report = build_decision_report(
